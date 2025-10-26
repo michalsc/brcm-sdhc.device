@@ -11,10 +11,6 @@ if(NOT TARGET devicetree)
     add_subdirectory(devicetree.resource EXCLUDE_FROM_ALL)
 endif()
 
-add_link_options(-ffreestanding -nostdlib -nostartfiles -s -Wl,-e_rom_start -Wl,-T${CMAKE_CURRENT_SOURCE_DIR}/ldscript.lds)
-add_compile_options(-Os -m68040 -msmall-code -mpcrel -mregparm=4 -fomit-frame-pointer)
-add_compile_definitions(PRIVATE VERSION_STRING="${VERSTRING}")
-
 add_executable(brcm-sdhc.device
     src/main.c
     src/expunge.c
