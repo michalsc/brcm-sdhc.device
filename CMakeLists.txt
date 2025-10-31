@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.14.0)
 project(brcm-sdhc VERSION 1.6.0)
 
+include(cmake/bin2h.cmake)
 include(cmake/verstring.cmake)
 get_verstring(VERSTRING)
 
@@ -26,6 +27,8 @@ add_executable(brcm-sdhc.device
     src/unit_task.c
     src/findtoken.c
 )
+
+bin_to_header(brcm-sdhc.device)
 
 target_compile_options(brcm-sdhc.device PRIVATE -Os -m68040 -msmall-code -mregparm=4 -fomit-frame-pointer)
 target_compile_definitions(brcm-sdhc.device PRIVATE VERSION_STRING="${VERSTRING}")
