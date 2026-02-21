@@ -347,7 +347,12 @@ static void LoadFilesystem(struct SDCardUnit *unit, ULONG dosType)
                             ULONG *srcPatch = &buff->fshd.fhb_Type;
                             ULONG patchFlags = buff->fshd.fhb_PatchFlags;
                             while (patchFlags) {
-                                *dstPatch++ = *srcPatch++;
+                                // Patch only if this bit is set in PatchFlags
+                                if (patchFlags & 1)
+                                    *dstPatch = *srcPatch;
+                                
+                                dstPatch++;
+                                srcPatch++;
                                 patchFlags >>= 1;
                             }
                             fse->fse_DosType = buff->fshd.fhb_DosType;
