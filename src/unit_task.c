@@ -40,11 +40,8 @@ static int lseg_read_long(struct SmartBuffer *buff, ULONG *ptr)
 static ULONG LoadSegBlock(struct SmartBuffer *bu)
 {
     struct ExecBase *SysBase = *(struct ExecBase **)4UL;
-    ULONG data;
-    APTR ret;
-	LONG firstHunk, lastHunk;
+    LONG firstHunk, lastHunk;
     ULONG *words;
-    struct RelocHunk *rh;
     ULONG current_hunk = 0;
 
     if (bu->size < 4 || bu->buffer[0] != HUNK_HEADER) {
@@ -52,19 +49,27 @@ static ULONG LoadSegBlock(struct SmartBuffer *bu)
 	}
 
     /* Parse header */
-    firstHunk = bu->buffer[3];
-    lastHunk = bu->buffer[4];
+    words = &bu->buffer[1];
+    while (*words != 0) {
+        words += *words + 1;
+    }
+    words++; /* Skip the trailing 0 */
+    words++; /* Skip table size */
+    firstHunk = *words++;
+    lastHunk = *words++;
+    ULONG hunks = lastHunk - firstHunk + 1;
 
-    words = &bu->buffer[5];
-
-    rh = AllocMem(sizeof(struct RelocHunk) * (lastHunk - firstHunk + 1), MEMF_PUBLIC);
+    struct RelocHunk *rh = AllocMem(sizeof(struct RelocHunk) * hunks, MEMF_PUBLIC);
+    if (!rh) {
+        return 0;
+    }
 
     /* Pre-allocate memory for all loadable hunks */
-    for (unsigned i = 0; i < lastHunk - firstHunk + 1; i++)
+    for (unsigned i = 0; i < hunks; i++)
     {
         ULONG size = *words++;
         ULONG requirements = MEMF_PUBLIC;
-        if (size & (HUNKF_CHIP | HUNKF_FAST) == (HUNKF_CHIP | HUNKF_FAST))
+        if ((size & (HUNKF_CHIP | HUNKF_FAST)) == (HUNKF_CHIP | HUNKF_FAST))
         {
             requirements = *words++;
         }
@@ -90,22 +95,25 @@ static ULONG LoadSegBlock(struct SmartBuffer *bu)
     /* Load and relocate hunks one after another */
     do
     {
-        ULONG hunk_size;
-        ULONG hunk_type;
+        /* Mask out the hunk type flags */
+        ULONG hunk_type = *words & 0x3fffffffUL;
 
-        switch((hunk_type = *words))
+        bug("[brcm-sdhc] LoadSegBlock hunk type %ld at 0x%lx\n", hunk_type, (ULONG)words);
+        switch(hunk_type)
         {
             case HUNK_CODE: // Fallthrough
             case HUNK_DATA: // Fallthrough
             case HUNK_BSS:
-                hunk_size = words[1];
+            {
+                ULONG hunk_size = words[1];
                 if (current_hunk >= firstHunk) {
                     if (hunk_type != HUNK_BSS) {
-                        CopyMem(&words[2], &rh[current_hunk].hunkData[2], hunk_size * 4);
+                        CopyMem(&words[2], &rh[current_hunk - firstHunk].hunkData[2], hunk_size * 4);
                     }
                 }
                 words += 2 + hunk_size;
                 break;
+            }
             
             case HUNK_RELOC32:  // Fallthrough
             case HUNK_RELOC32SHORT:
@@ -167,19 +175,49 @@ static ULONG LoadSegBlock(struct SmartBuffer *bu)
                 words++;
                 break;
 
+            case HUNK_DEBUG:
+                words += words[1] + 2;
+                break;
+
             case HUNK_END:
                 words++;
                 current_hunk++;
                 break;
+
+            default:
+                /* Unknown hunk, prevent infinite loop */
+                bug("[brcm-sdhc] Unknown hunk type: %ld\n", hunk_type);
+                FreeMem(rh, sizeof(struct RelocHunk) * hunks);
+                return 0;
         }
     } while(current_hunk <= lastHunk);
 
-    if (rh) {
-        ret = &rh[0].hunkData[1];
-        FreeMem(rh, sizeof(struct RelocHunk) * (lastHunk - firstHunk + 1));
-    }
-
+    APTR ret = &rh[0].hunkData[1];
+    FreeMem(rh, sizeof(struct RelocHunk) * hunks);
     return MKBADDR(ret);   
+}
+
+static void ProcessPatchFlags(struct DeviceNode *dn, struct FileSysEntry *fse)
+{
+    const ULONG patchFlags = fse->fse_PatchFlags;
+    if (patchFlags & 0x0001)
+        dn->dn_Type = fse->fse_Type;
+    if (patchFlags & 0x0002)
+        dn->dn_Task = (struct MsgPort *)fse->fse_Task;
+    if (patchFlags & 0x0004)
+        dn->dn_Lock = fse->fse_Lock;
+    if (patchFlags & 0x0008)
+        dn->dn_Handler = fse->fse_Handler;
+    if (patchFlags & 0x0010)
+        dn->dn_StackSize = fse->fse_StackSize;
+    if (patchFlags & 0x0020)
+        dn->dn_Priority = fse->fse_Priority;
+    if (patchFlags & 0x0040)
+        dn->dn_Startup = fse->fse_Startup;
+    if (patchFlags & 0x0080)
+        dn->dn_SegList = fse->fse_SegList;
+    if (patchFlags & 0x0100)
+        dn->dn_GlobalVec = fse->fse_GlobalVec;
 }
 
 static void LoadFilesystem(struct SDCardUnit *unit, ULONG dosType)
@@ -260,8 +298,9 @@ static void LoadFilesystem(struct SDCardUnit *unit, ULONG dosType)
 
                     if (buff->fshd.fhb_DosType == dosType)
                     {
-                        APTR buffer = AllocMem(65536, MEMF_PUBLIC);
-                        ULONG buffer_size = 65536;
+                        const ULONG CHUNK_SIZE = 64 * 1024;
+                        APTR buffer = AllocMem(CHUNK_SIZE, MEMF_PUBLIC);
+                        ULONG buffer_size = CHUNK_SIZE;
                         ULONG loaded = 0;
 
                         if (SDCardBase->sd_Verbose)
@@ -306,11 +345,11 @@ static void LoadFilesystem(struct SDCardUnit *unit, ULONG dosType)
                                     lseg = ls_buff->lseg.lsb_Next;
 
                                     if (loaded + 4*123 > buffer_size) {
-                                        APTR new_buff = AllocMem(buffer_size + 65536, MEMF_PUBLIC);
+                                        APTR new_buff = AllocMem(buffer_size + CHUNK_SIZE, MEMF_PUBLIC);
                                         CopyMemQuick(buffer, new_buff, buffer_size);
                                         FreeMem(buffer, buffer_size);
                                         buffer = new_buff;
-                                        buffer_size += 65536;
+                                        buffer_size += CHUNK_SIZE;
                                     }
 
                                     CopyMemQuick(ls_buff->lseg.lsb_LoadData, buffer + loaded, 4 * 123);
@@ -343,24 +382,31 @@ static void LoadFilesystem(struct SDCardUnit *unit, ULONG dosType)
 
                         if (fse) {
                             struct FileSysResource *fsr = OpenResource(FSRNAME);
-                            ULONG *dstPatch = &fse->fse_Type;
-                            ULONG *srcPatch = &buff->fshd.fhb_Type;
-                            ULONG patchFlags = buff->fshd.fhb_PatchFlags;
-                            while (patchFlags) {
-                                // Patch only if this bit is set in PatchFlags
-                                if (patchFlags & 1)
-                                    *dstPatch = *srcPatch;
-                                
-                                dstPatch++;
-                                srcPatch++;
-                                patchFlags >>= 1;
-                            }
-                            fse->fse_DosType = buff->fshd.fhb_DosType;
-                            fse->fse_Version = buff->fshd.fhb_Version;
-                            fse->fse_PatchFlags = buff->fshd.fhb_PatchFlags;
-                            fse->fse_Node.ln_Name = NULL;
+                            struct FileSysHeaderBlock *fshb = &buff->fshd;
+                            ULONG patchFlags = fshb->fhb_PatchFlags;
+                            if (patchFlags & 0x0001)
+                            	fse->fse_Type = fshb->fhb_Type;
+                            if (patchFlags & 0x0002)
+                            	fse->fse_Task = fshb->fhb_Task;
+                            if (patchFlags & 0x0004)
+                            	fse->fse_Lock = fshb->fhb_Lock;
+                            if (patchFlags & 0x0008)
+                            	fse->fse_Handler = fshb->fhb_Handler;
+                            if (patchFlags & 0x0010)
+                            	fse->fse_StackSize = fshb->fhb_StackSize;
+                            if (patchFlags & 0x0020)
+                            	fse->fse_Priority = fshb->fhb_Priority;
+                            if (patchFlags & 0x0040)
+                            	fse->fse_Startup = fshb->fhb_Startup;
+                            if (patchFlags & 0x0100)
+                            	fse->fse_GlobalVec = fshb->fhb_GlobalVec;
+                            fse->fse_DosType = fshb->fhb_DosType;
+                            fse->fse_Version = fshb->fhb_Version;
+                            fse->fse_PatchFlags = fshb->fhb_PatchFlags;
                             fse->fse_SegList = segList;
 
+                            bug("[brcm-sdhc:%ld] Adding FSE: DosType=0x%lx StackSize=%ld\n",
+                                unit->su_UnitNum, fse->fse_DosType, fse->fse_StackSize);
                             Forbid();
                             AddHead(&fsr->fsr_FileSysEntries, &fse->fse_Node);
                             Permit();
@@ -619,18 +665,7 @@ static void MountPartitions(struct SDCardUnit *unit)
                             struct DeviceNode *devNode = MakeDosNode(paramPkt);
 
                             if (fse) {
-                                // Process PatchFlags
-                                ULONG *dstPatch = &devNode->dn_Type;
-                                ULONG *srcPatch = &fse->fse_Type;
-                                ULONG patchFlags = fse->fse_PatchFlags;
-                                while (patchFlags) {
-                                    if (patchFlags & 1) {
-                                        *dstPatch = *srcPatch;
-                                    }
-                                    patchFlags >>= 1;
-                                    srcPatch++;
-                                    dstPatch++;
-                                }
+                                ProcessPatchFlags(devNode, fse);
                             }
 
                             if (SDCardBase->sd_Verbose)
