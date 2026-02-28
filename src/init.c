@@ -59,12 +59,6 @@
 extern const char deviceName[];
 extern const char deviceIdString[];
 
-void kprintf(const char * msg asm("a0"), void * args asm("a1")) 
-{
-    struct ExecBase *SysBase = *(struct ExecBase **)4UL;
-    RawDoFmt(msg, args, (APTR)putch, NULL);
-}
-
 /*
     Some properties, like e.g. #size-cells, are not always available in a key, but in that case the properties
     should be searched for in the parent. The process repeats recursively until either root key is found
@@ -543,11 +537,7 @@ APTR Init(struct ExecBase *SysBase asm("a6"))
                                 // Partition does exist. List it.
                                 if (p0_Type != 0) {
                                     if (SDCardBase->sd_Verbose) {
-                                        ULONG args[] = {
-                                            i, p0_Type, p0_Start, p0_Len 
-                                        };
-
-                                        RawDoFmt("[brcm-sdhc] Partition%ld: type 0x%02lx, start 0x%08lx, length 0x%08lx\n", args, (APTR)putch, NULL);
+                                        bug("[brcm-sdhc] Partition%ld: type 0x%02lx, start 0x%08lx, length 0x%08lx\n", i, p0_Type, p0_Start, p0_Len );
                                     }
 
                                     // Partition type 0x76 (Amithlon-like) creates new virtual unit with given capacity
@@ -566,7 +556,7 @@ APTR Init(struct ExecBase *SysBase asm("a6"))
                     }
 
                     if (SDCardBase->sd_Verbose)
-                        RawDoFmt("[brcm-sdhc] Init complete.\n", NULL, (APTR)putch, NULL);
+                        bug("[brcm-sdhc] Init complete.\n");
 
                     /* Initialization is complete. Create all tasks for the units now */
                     for (int unit = 0; unit < SDCardBase->sd_UnitCount; unit++)

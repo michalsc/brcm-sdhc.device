@@ -17,10 +17,7 @@ void SD_Open(struct IORequest * io asm("a1"), LONG unitNumber asm("d0"), ULONG f
 
     if (SDCardBase->sd_Verbose > 1)
     {
-        ULONG args[] = {
-            (ULONG)io, unitNumber, flags
-        };
-        RawDoFmt("[brcm-sdhc] Open(%08lx, %lx, %ld)\n", args, (APTR)putch, NULL);
+        bug("[brcm-sdhc] Open(%08lx, %lx, %ld)\n", (ULONG)io, unitNumber, flags);
     }
 
     /* Do not continue if unit number does not fit */
