@@ -20,12 +20,14 @@ add_executable(brcm-sdhc.device
     src/close.c
     src/init.c
     src/beginio.c
+    src/io.c
     src/abortio.c
     src/mbox.c
     src/emmc.c
     src/sdhost.c
     src/unit_task.c
     src/findtoken.c
+    src/debug.c
 )
 
 set_source_files_properties(src/abortio.c PROPERTIES COMPILE_FLAGS 
