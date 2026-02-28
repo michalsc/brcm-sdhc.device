@@ -130,8 +130,6 @@ struct SDCardUnit {
 
 void UnitTask();
 
-#define SDCARD_VERSION  1
-#define SDCARD_REVISION 2
 #define SDCARD_PRIORITY 20
 
 #define UNIT_TASK_PRIORITY  10

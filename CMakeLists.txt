@@ -38,7 +38,10 @@ set_source_files_properties(src/beginio.c PROPERTIES COMPILE_FLAGS
 bin_to_header(brcm-sdhc.device)
 
 target_compile_options(brcm-sdhc.device PRIVATE -Os -m68040 -msmall-code -mregparm=4 -fomit-frame-pointer)
-target_compile_definitions(brcm-sdhc.device PRIVATE VERSION_STRING="${VERSTRING}")
+target_compile_definitions(brcm-sdhc.device PRIVATE 
+    VERSION_STRING="${VERSTRING}"
+    SDCARD_VERSION=${CMAKE_PROJECT_VERSION_MAJOR}
+    SDCARD_REVISION=${CMAKE_PROJECT_VERSION_MINOR})
 target_include_directories(brcm-sdhc.device PRIVATE include)
 target_link_options(brcm-sdhc.device PRIVATE -ffreestanding -nostdlib -nostartfiles -s -Wl,-e_rom_start -Wl,-T${CMAKE_CURRENT_SOURCE_DIR}/ldscript.lds)
 target_link_libraries(brcm-sdhc.device devicetree)
