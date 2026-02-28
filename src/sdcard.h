@@ -422,7 +422,17 @@ static inline void wr32be(APTR addr, ULONG offset, ULONG val)
 
 static inline void putch(UBYTE data asm("d0"), APTR ignore asm("a3"))
 {
+#if 1  // Use Emu68 fast serial
     *(UBYTE*)0xdeadbeef = data;
+#else  // Use RawPutChar
+    asm volatile (
+            "   move.l  0x4, %%a6 \n"
+            "   jsr     -516(%%a6) \n"
+            : "=d" (data)
+            : "0" (data)
+            : "a6", "a0", "cc", "memory"
+        );
+#endif
 }
 
 void kprintf(const char * msg asm("a0"), void * args asm("a1"));

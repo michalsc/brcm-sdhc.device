@@ -194,9 +194,68 @@ static ULONG LoadSegBlock(struct SmartBuffer *bu)
 
     APTR ret = &rh[0].hunkData[1];
     FreeMem(rh, sizeof(struct RelocHunk) * hunks);
-    return MKBADDR(ret);   
+    return MKBADDR(ret);
 }
 
+static void ProcessPatchFlags(struct DeviceNode *dn, struct FileSysEntry *fse)
+{
+    const ULONG patchFlags = fse->fse_PatchFlags;
+    if (patchFlags & 0x0001)
+        dn->dn_Type = fse->fse_Type;
+    if (patchFlags & 0x0002)
+        dn->dn_Task = (struct MsgPort *)fse->fse_Task;
+    if (patchFlags & 0x0004)
+        dn->dn_Lock = fse->fse_Lock;
+    if (patchFlags & 0x0008)
+        dn->dn_Handler = fse->fse_Handler;
+    if (patchFlags & 0x0010)
+        dn->dn_StackSize = fse->fse_StackSize;
+    if (patchFlags & 0x0020)
+        dn->dn_Priority = fse->fse_Priority;
+    if (patchFlags & 0x0040)
+        dn->dn_Startup = fse->fse_Startup;
+    if (patchFlags & 0x0080)
+        dn->dn_SegList = fse->fse_SegList;
+    if (patchFlags & 0x0100)
+        dn->dn_GlobalVec = fse->fse_GlobalVec;
+}
+
+/*
+ * Use PatchFlags to compute the extended size of FileSysEntry.
+ *
+ * FileSysHeaderBlock defines 23 reserved fields for future expansion
+ * in addition to the first 9 matching FileSysEntry.
+ *
+ * In practice, current RDB partitioning tools never set patch flags
+ * beyond the first 9, and many existing autoboot ROMs don't process
+ * them correctly.
+ */
+static struct FileSysEntry* MakeFileSysEntry(struct FileSysHeaderBlock* fhb)
+{
+    struct ExecBase *SysBase = *(struct ExecBase **)4UL;
+    ULONG fse_ext_fields = 0;
+    ULONG patch_flags = fhb->fhb_PatchFlags;
+
+    /* Never allocate a struct shorter than its NDK definition */
+    const ULONG FSE_FIXED_FIELDS = 9;
+    patch_flags >>= FSE_FIXED_FIELDS;
+
+    /* Count any flags beyond the first 9. These are usually all 0 */
+    while (patch_flags)
+    {
+        fse_ext_fields++;
+        patch_flags >>= 1;
+    }
+
+    const ULONG fse_size = sizeof(struct FileSysEntry) + fse_ext_fields * sizeof(LONG);
+    struct FileSysEntry *fse = AllocMem(fse_size, MEMF_CLEAR);
+    if (!fse)
+        return NULL;
+
+    ULONG bytes_to_copy = (FSE_FIXED_FIELDS + fse_ext_fields) * sizeof(LONG);
+    CopyMem(&fhb->fhb_DosType, &fse->fse_DosType, bytes_to_copy);
+    return fse;
+}
 
 static void LoadFilesystem(struct SDCardUnit *unit, ULONG dosType)
 {
@@ -276,8 +335,9 @@ static void LoadFilesystem(struct SDCardUnit *unit, ULONG dosType)
 
                     if (buff->fshd.fhb_DosType == dosType)
                     {
-                        APTR buffer = AllocMem(65536, MEMF_PUBLIC);
-                        ULONG buffer_size = 65536;
+                        const ULONG CHUNK_SIZE = 64 * 1024;
+                        APTR buffer = AllocMem(CHUNK_SIZE, MEMF_PUBLIC);
+                        ULONG buffer_size = CHUNK_SIZE;
                         ULONG loaded = 0;
 
                         if (SDCardBase->sd_Verbose)
@@ -322,11 +382,11 @@ static void LoadFilesystem(struct SDCardUnit *unit, ULONG dosType)
                                     lseg = ls_buff->lseg.lsb_Next;
 
                                     if (loaded + 4*123 > buffer_size) {
-                                        APTR new_buff = AllocMem(buffer_size + 65536, MEMF_PUBLIC);
+                                        APTR new_buff = AllocMem(buffer_size + CHUNK_SIZE, MEMF_PUBLIC);
                                         CopyMemQuick(buffer, new_buff, buffer_size);
                                         FreeMem(buffer, buffer_size);
                                         buffer = new_buff;
-                                        buffer_size += 65536;
+                                        buffer_size += CHUNK_SIZE;
                                     }
 
                                     CopyMemQuick(ls_buff->lseg.lsb_LoadData, buffer + loaded, 4 * 123);
@@ -347,39 +407,25 @@ static void LoadFilesystem(struct SDCardUnit *unit, ULONG dosType)
                             RawDoFmt("[brcm-sdhc:%ld] Loaded %ld bytes into buffer at %08lx\n", args, (APTR)putch, NULL);
                         }
 
-                        struct SmartBuffer bu;
-                        
-                        bu.buffer = buffer;
-                        bu.pos = 0;
-                        bu.size = buffer_size;
-                        
-                        ULONG segList = LoadSegBlock(&bu);
-
-                        struct FileSysEntry *fse = AllocMem(sizeof(struct FileSysEntry), MEMF_CLEAR);
-
+                        struct FileSysEntry* fse = MakeFileSysEntry(&buff->fshd);
                         if (fse) {
-                            struct FileSysResource *fsr = OpenResource(FSRNAME);
-                            ULONG *dstPatch = &fse->fse_Type;
-                            ULONG *srcPatch = &buff->fshd.fhb_Type;
-                            ULONG patchFlags = buff->fshd.fhb_PatchFlags;
-                            while (patchFlags) {
-                                // Patch only if this bit is set in PatchFlags
-                                if (patchFlags & 1)
-                                    *dstPatch = *srcPatch;
-                                
-                                dstPatch++;
-                                srcPatch++;
-                                patchFlags >>= 1;
-                            }
-                            fse->fse_DosType = buff->fshd.fhb_DosType;
-                            fse->fse_Version = buff->fshd.fhb_Version;
-                            fse->fse_PatchFlags = buff->fshd.fhb_PatchFlags;
-                            fse->fse_Node.ln_Name = NULL;
-                            fse->fse_SegList = segList;
 
-                            Forbid();
-                            AddHead(&fsr->fsr_FileSysEntries, &fse->fse_Node);
-                            Permit();
+                            struct SmartBuffer bu;
+                            bu.buffer = buffer;
+                            bu.pos = 0;
+                            bu.size = buffer_size;
+                            fse->fse_SegList = LoadSegBlock(&bu);
+
+                            bug("[brcm-sdhc:%ld] Adding FSE: DosType=0x%lx StackSize=%ld, PatchFlags=0x%lx\n",
+                                unit->su_UnitNum, fse->fse_DosType, fse->fse_StackSize, fse->fse_PatchFlags);
+
+                            struct FileSysResource *fsr = OpenResource(FSRNAME);
+                            if (fsr)
+                            {
+                                Forbid();
+                                AddHead(&fsr->fsr_FileSysEntries, &fse->fse_Node);
+                                Permit();
+                            }
                         }
 
                         FreeMem(buffer, buffer_size);
@@ -635,18 +681,7 @@ static void MountPartitions(struct SDCardUnit *unit)
                             struct DeviceNode *devNode = MakeDosNode(paramPkt);
 
                             if (fse) {
-                                // Process PatchFlags
-                                ULONG *dstPatch = &devNode->dn_Type;
-                                ULONG *srcPatch = &fse->fse_Type;
-                                ULONG patchFlags = fse->fse_PatchFlags;
-                                while (patchFlags) {
-                                    if (patchFlags & 1) {
-                                        *dstPatch = *srcPatch;
-                                    }
-                                    patchFlags >>= 1;
-                                    srcPatch++;
-                                    dstPatch++;
-                                }
+                                ProcessPatchFlags(devNode, fse);
                             }
 
                             if (SDCardBase->sd_Verbose)
