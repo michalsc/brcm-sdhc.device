@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14.0)
-project(brcm-sdhc VERSION 1.7.0)
+project(brcm-sdhc VERSION 1.8.0)
 
 include(cmake/bin2h.cmake)
 include(cmake/verstring.cmake)
