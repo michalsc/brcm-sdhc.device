@@ -37,9 +37,10 @@ static int lseg_read_long(struct SmartBuffer *buff, ULONG *ptr)
         return 0;
 }
 
-static ULONG LoadSegBlock(struct SmartBuffer *bu)
+static ULONG LoadSegBlock(struct SDCardBase *SDCardBase, struct SmartBuffer *bu)
 {
     struct ExecBase *SysBase = *(struct ExecBase **)4UL;
+    APTR ret;
     LONG firstHunk, lastHunk;
     ULONG *words;
     ULONG current_hunk = 0;
@@ -192,13 +193,52 @@ static ULONG LoadSegBlock(struct SmartBuffer *bu)
         }
     } while(current_hunk <= lastHunk);
 
-    APTR ret = &rh[0].hunkData[1];
-    FreeMem(rh, sizeof(struct RelocHunk) * hunks);
-    return MKBADDR(ret);   
+    if (rh) {
+        ret = &rh[0].hunkData[1];
+        FreeMem(rh, sizeof(struct RelocHunk) * (lastHunk - firstHunk + 1));
+    }
+
+    return MKBADDR(ret);
 }
 
+/*
+ * Use PatchFlags to compute the extended size of FileSysEntry.
+ *
+ * FileSysHeaderBlock defines 23 reserved fields for future expansion
+ * in addition to the first 9 matching FileSysEntry.
+ *
+ * In practice, current RDB partitioning tools never set patch flags
+ * beyond the first 9, and many existing autoboot ROMs don't process
+ * them correctly.
+ */
+static struct FileSysEntry* MakeFileSysEntry(struct FileSysHeaderBlock* fhb)
+{
+    struct ExecBase *SysBase = *(struct ExecBase **)4UL;
+    ULONG fse_ext_fields = 0;
+    ULONG patch_flags = fhb->fhb_PatchFlags;
 
-static void LoadFilesystem(struct SDCardUnit *unit, ULONG dosType)
+    /* Never allocate a struct shorter than its NDK definition */
+    const ULONG FSE_FIXED_FIELDS = 9;
+    patch_flags >>= FSE_FIXED_FIELDS;
+
+    /* Count any flags beyond the first 9. These are usually all 0 */
+    while (patch_flags)
+    {
+        fse_ext_fields++;
+        patch_flags >>= 1;
+    }
+
+    const ULONG fse_size = sizeof(struct FileSysEntry) + fse_ext_fields * sizeof(LONG);
+    struct FileSysEntry *fse = AllocMem(fse_size, MEMF_CLEAR);
+    if (!fse)
+        return NULL;
+
+    ULONG bytes_to_copy = (FSE_FIXED_FIELDS + fse_ext_fields) * sizeof(LONG);
+    CopyMem(&fhb->fhb_DosType, &fse->fse_DosType, bytes_to_copy);
+    return fse;
+}
+
+static struct FileSysEntry* LoadFilesystem(struct SDCardUnit *unit, ULONG dosType, ULONG minVersion)
 {
     struct SDCardBase *SDCardBase = unit->su_Base;
     struct ExecBase *SysBase = SDCardBase->sd_SysBase;
@@ -266,124 +306,122 @@ static void LoadFilesystem(struct SDCardUnit *unit, ULONG dosType)
 
                     if (SDCardBase->sd_Verbose)
                     {
-                        ULONG args[] = {
+                        bug("[brcm-sdhc:%ld] Checking FSHD for DosType %08lx\n", 
                             unit->su_UnitNum,
-                            buff->fshd.fhb_DosType
-                        };
-
-                        RawDoFmt("[brcm-sdhc:%ld] Checking FSHD for DosType %08lx\n", args, (APTR)putch, NULL);
+                            buff->fshd.fhb_DosType);
                     }
 
                     if (buff->fshd.fhb_DosType == dosType)
                     {
-                        APTR buffer = AllocMem(65536, MEMF_PUBLIC);
-                        ULONG buffer_size = 65536;
-                        ULONG loaded = 0;
-
                         if (SDCardBase->sd_Verbose)
                         {
-                            ULONG args[] = {
-                                unit->su_UnitNum
-                            };
+                            bug("[brcm-sdhc:%ld] DOSType match!\n", unit->su_UnitNum);
+                        }
 
-                            RawDoFmt("[brcm-sdhc:%ld] DOSType match!\n", args, (APTR)putch, NULL);
-                        }   
-
-                        // Check LSEG location
-                        ULONG lseg = buff->fshd.fhb_SegListBlocks;
-
-                        union
+                        if (buff->fshd.fhb_Version > minVersion)
                         {
-                            struct RigidDiskBlock       rdsk;
-                            struct PartitionBlock       part;
-                            struct FileSysHeaderBlock   fshd;
-                            struct LoadSegBlock         lseg;
-                            ULONG                       ublock[512/4];
-                            UBYTE                       bblock[512];
-                        } *ls_buff = AllocMem(512, MEMF_PUBLIC);
+                            const ULONG CHUNK_SIZE = 64 * 1024;
+                            APTR buffer = AllocMem(CHUNK_SIZE, MEMF_PUBLIC);
+                            ULONG buffer_size = CHUNK_SIZE;
+                            ULONG loaded = 0;
 
-                        while(lseg != 0xffffffff)
-                        {
-                            SDCardBase->sd_Read((APTR)ls_buff->bblock, 512, unit->su_StartBlock + lseg, SDCardBase);
-
-                            if (ls_buff->ublock[0] == IDNAME_LOADSEG)
+                            if (SDCardBase->sd_Verbose)
                             {
-                                ULONG cnt = ls_buff->lseg.lsb_SummedLongs;
-                                ULONG sum = 0;
+                                bug("[brcm-sdhc:%ld] Version %ld.%ld higher than minimum %ld.%ld!\n", unit->su_UnitNum, 
+                                    buff->fshd.fhb_Version >> 16, buff->fshd.fhb_Version & 0xffff, 
+                                    minVersion >> 16, minVersion & 0xffff);
+                            }
 
-                                /* Header was found. Checksum the block now */
-                                for (int x = 0; x < cnt; x++) {
-                                    sum += ls_buff->ublock[x];
-                                }
+                            // Check LSEG location
+                            ULONG lseg = buff->fshd.fhb_SegListBlocks;
 
-                                /* If sum == 0 then the block can be considered valid. */
-                                if (sum == 0)
+                            union
+                            {
+                                struct RigidDiskBlock       rdsk;
+                                struct PartitionBlock       part;
+                                struct FileSysHeaderBlock   fshd;
+                                struct LoadSegBlock         lseg;
+                                ULONG                       ublock[512/4];
+                                UBYTE                       bblock[512];
+                            } *ls_buff = AllocMem(512, MEMF_PUBLIC);
+
+                            while(lseg != 0xffffffff)
+                            {
+                                SDCardBase->sd_Read((APTR)ls_buff->bblock, 512, unit->su_StartBlock + lseg, SDCardBase);
+
+                                if (ls_buff->ublock[0] == IDNAME_LOADSEG)
                                 {
-                                    lseg = ls_buff->lseg.lsb_Next;
+                                    ULONG cnt = ls_buff->lseg.lsb_SummedLongs;
+                                    ULONG sum = 0;
 
-                                    if (loaded + 4*123 > buffer_size) {
-                                        APTR new_buff = AllocMem(buffer_size + 65536, MEMF_PUBLIC);
-                                        CopyMemQuick(buffer, new_buff, buffer_size);
-                                        FreeMem(buffer, buffer_size);
-                                        buffer = new_buff;
-                                        buffer_size += 65536;
+                                    /* Header was found. Checksum the block now */
+                                    for (int x = 0; x < cnt; x++) {
+                                        sum += ls_buff->ublock[x];
                                     }
 
-                                    CopyMemQuick(ls_buff->lseg.lsb_LoadData, buffer + loaded, 4 * 123);
+                                    /* If sum == 0 then the block can be considered valid. */
+                                    if (sum == 0)
+                                    {
+                                        lseg = ls_buff->lseg.lsb_Next;
 
-                                    loaded += 4*123;
+                                        if (loaded + 4*123 > buffer_size) {
+                                            APTR new_buff = AllocMem(buffer_size + CHUNK_SIZE, MEMF_PUBLIC);
+                                            CopyMemQuick(buffer, new_buff, buffer_size);
+                                            FreeMem(buffer, buffer_size);
+                                            buffer = new_buff;
+                                            buffer_size += CHUNK_SIZE;
+                                        }
+
+                                        CopyMemQuick(ls_buff->lseg.lsb_LoadData, buffer + loaded, 4 * 123);
+
+                                        loaded += 4*123;
+                                    }
+                                }
+                            }
+
+                            if (SDCardBase->sd_Verbose)
+                            {
+                                bug("[brcm-sdhc:%ld] Loaded %ld bytes into buffer at %08lx\n", 
+                                    unit->su_UnitNum,
+                                    loaded,
+                                    (ULONG)buffer);
+                            }
+
+                            struct SmartBuffer bu;
+                            
+                            bu.buffer = buffer;
+                            bu.pos = 0;
+                            bu.size = buffer_size;
+                            
+                            ULONG segList = LoadSegBlock(SDCardBase, &bu);
+
+                            BOOL update_node = FALSE;
+
+                            struct FileSysResource *fsr = OpenResource(FSRNAME);
+
+                            if (fsr)
+                            {
+                                struct FileSysEntry *fse = MakeFileSysEntry(&buff->fshd);
+                                
+                                if (fse)
+                                {
+                                    /* Set Node's name to the creator of this entry, set SegList to loaded FS */
+                                    fse->fse_Node.ln_Name = unit->su_Base->sd_Device.dd_Library.lib_Node.ln_Name;
+                                    fse->fse_SegList = segList;
+
+                                    Forbid();
+                                    AddHead(&fsr->fsr_FileSysEntries, &fse->fse_Node);
+                                    Permit();
+
+                                    /* Release all memory and return FSE */
+                                    FreeMem(buffer, buffer_size);
+                                    FreeMem(ls_buff, 512);
+                                    FreeMem(buff, 512);
+
+                                    return fse;
                                 }
                             }
                         }
-
-                        if (SDCardBase->sd_Verbose)
-                        {
-                            ULONG args[] = {
-                                unit->su_UnitNum,
-                                loaded,
-                                (ULONG)buffer
-                            };
-
-                            RawDoFmt("[brcm-sdhc:%ld] Loaded %ld bytes into buffer at %08lx\n", args, (APTR)putch, NULL);
-                        }
-
-                        struct SmartBuffer bu;
-                        
-                        bu.buffer = buffer;
-                        bu.pos = 0;
-                        bu.size = buffer_size;
-                        
-                        ULONG segList = LoadSegBlock(&bu);
-
-                        struct FileSysEntry *fse = AllocMem(sizeof(struct FileSysEntry), MEMF_CLEAR);
-
-                        if (fse) {
-                            struct FileSysResource *fsr = OpenResource(FSRNAME);
-                            ULONG *dstPatch = &fse->fse_Type;
-                            ULONG *srcPatch = &buff->fshd.fhb_Type;
-                            ULONG patchFlags = buff->fshd.fhb_PatchFlags;
-                            while (patchFlags) {
-                                // Patch only if this bit is set in PatchFlags
-                                if (patchFlags & 1)
-                                    *dstPatch = *srcPatch;
-                                
-                                dstPatch++;
-                                srcPatch++;
-                                patchFlags >>= 1;
-                            }
-                            fse->fse_DosType = buff->fshd.fhb_DosType;
-                            fse->fse_Version = buff->fshd.fhb_Version;
-                            fse->fse_PatchFlags = buff->fshd.fhb_PatchFlags;
-                            fse->fse_Node.ln_Name = NULL;
-                            fse->fse_SegList = segList;
-
-                            Forbid();
-                            AddHead(&fsr->fsr_FileSysEntries, &fse->fse_Node);
-                            Permit();
-                        }
-
-                        FreeMem(buffer, buffer_size);
-                        FreeMem(ls_buff, 512);
                     }
                 }
             }
@@ -391,9 +429,11 @@ static void LoadFilesystem(struct SDCardUnit *unit, ULONG dosType)
     }
 
     FreeMem(buff, 512);
+
+    return NULL;
 }
 
-struct FileSysEntry * findFSE(struct SDCardUnit *unit, ULONG dosType)
+struct FileSysEntry * findFSE(struct SDCardUnit *unit, ULONG dosType, ULONG minVersion)
 {
     struct SDCardBase *SDCardBase = unit->su_Base;
     struct ExecBase *SysBase = SDCardBase->sd_SysBase;
@@ -411,8 +451,10 @@ struct FileSysEntry * findFSE(struct SDCardUnit *unit, ULONG dosType)
         {
             if (n->fse_DosType == dosType)
             {
-                ret = n;
-                break;
+                if (n->fse_Version >= minVersion) {
+                    ret = n;
+                    break;
+                }
             }
         }
         Permit();
@@ -533,10 +575,7 @@ static void MountPartitions(struct SDCardUnit *unit)
 
     if (SDCardBase->sd_Verbose)
     {
-        ULONG args[] = {
-            unit->su_UnitNum
-        };
-        RawDoFmt("[brcm-sdhc:%ld] MountPartitions\n", args, (APTR)putch, NULL);
+        bug("[brcm-sdhc:%ld] MountPartitions\n", unit->su_UnitNum);
     }
 
     /* RigidDiskBlock has to be found within first 16 sectors. Check them now */
@@ -594,24 +633,38 @@ static void MountPartitions(struct SDCardUnit *unit)
                     if ((buff.part.pb_Flags & PBFF_NOMOUNT) == 0)
                     {
                         if (FixNameConflict(buff.part.pb_DriveName, ExpansionBase))
-                        {                       
+                        {
                             ULONG *paramPkt = AllocMem(24 * sizeof(ULONG), MEMF_PUBLIC);
                             UBYTE *name = AllocMem(buff.part.pb_DriveName[0] + 5, MEMF_PUBLIC);
                             struct ConfigDev *cdev = SDCardBase->sd_ConfigDev;
-                            struct FileSysEntry *fse = findFSE(unit, buff.part.pb_Environment[DE_DOSTYPE]);
+                            struct FileSysEntry *fse_found = findFSE(unit, buff.part.pb_Environment[DE_DOSTYPE], 0);
+                            struct FileSysEntry *fse = NULL;
+                            ULONG minVersion = 0;
 
-                            if (fse == NULL) {
-                                LoadFilesystem(unit, buff.part.pb_Environment[DE_DOSTYPE]);
-                                fse = findFSE(unit, buff.part.pb_Environment[DE_DOSTYPE]);
+                            /* 
+                                If FSE was found, find out its version. New FSE will be created
+                                only if it is newer than the existing one.
+                            */
+                            if (fse_found != NULL) {
+                                minVersion = fse_found->fse_Version;
                             }
+
+                            /* Load filesystem if the one in RDB is more recent, otherwise return the */
+                            fse = LoadFilesystem(unit, buff.part.pb_Environment[DE_DOSTYPE], minVersion);
                             
+                            /* 
+                                If fse is NULL it means the filesystem was either not found in RDB,
+                                or it was older then the one found in FileSys resource 
+                            */
+                            if (fse == NULL) {
+                                fse = fse_found;
+                            }
+
                             if (SDCardBase->sd_Verbose)
                             {
-                                ULONG args[] = {
+                                bug("[brcm-sdhc:%ld] FileSysEntry seems to be %08lx\n", 
                                     unit->su_UnitNum,
-                                    (ULONG)fse
-                                };
-                                RawDoFmt("[brcm-sdhc:%ld] FileSysEntry seems to be %08lx\n", args, (APTR)putch, NULL);
+                                    (ULONG)fse);
                             }
 
                             for (int i=0; i < buff.part.pb_DriveName[0]; i++) {
@@ -651,11 +704,9 @@ static void MountPartitions(struct SDCardUnit *unit)
 
                             if (SDCardBase->sd_Verbose)
                             {
-                                ULONG args[] = {
+                                bug("[brcm-sdhc:%ld] Mounting Boot Node %s\n", 
                                     unit->su_UnitNum,
-                                    (ULONG)name
-                                };
-                                RawDoFmt("[brcm-sdhc:%ld] Mounting Boot Node %s\n", args, (APTR)putch, NULL);
+                                    (ULONG)name);
                             }
                             AddBootNode(paramPkt[DE_BOOTPRI + 4], 0, devNode, cdev);
                         }
@@ -703,5 +754,5 @@ void UnitTask()
             io->io_Message.mn_Node.ln_Type = NT_MESSAGE;
             ReplyMsg(&io->io_Message);
         }
-    }       
+    }
 }
