@@ -40,31 +40,36 @@ static int lseg_read_long(struct SmartBuffer *buff, ULONG *ptr)
 static ULONG LoadSegBlock(struct SmartBuffer *bu)
 {
     struct ExecBase *SysBase = *(struct ExecBase **)4UL;
-    ULONG data;
-    APTR ret;
-	LONG firstHunk, lastHunk;
+    LONG firstHunk, lastHunk;
     ULONG *words;
-    struct RelocHunk *rh;
     ULONG current_hunk = 0;
 
     if (bu->size < 4 || bu->buffer[0] != HUNK_HEADER) {
 		return 0;
-	}
+    }
 
     /* Parse header */
-    firstHunk = bu->buffer[3];
-    lastHunk = bu->buffer[4];
+    words = &bu->buffer[1];
+    while (*words != 0) {
+        words += *words + 1;
+    }
+    words++; /* Skip the trailing 0 */
+    words++; /* Skip table size */
+    firstHunk = *words++;
+    lastHunk = *words++;
+    ULONG hunks = lastHunk - firstHunk + 1;
 
-    words = &bu->buffer[5];
-
-    rh = AllocMem(sizeof(struct RelocHunk) * (lastHunk - firstHunk + 1), MEMF_PUBLIC);
+    struct RelocHunk *rh = AllocMem(sizeof(struct RelocHunk) * hunks, MEMF_PUBLIC);
+    if (!rh) {
+        return 0;
+    }
 
     /* Pre-allocate memory for all loadable hunks */
-    for (unsigned i = 0; i < lastHunk - firstHunk + 1; i++)
+    for (unsigned i = 0; i < hunks; i++)
     {
         ULONG size = *words++;
         ULONG requirements = MEMF_PUBLIC;
-        if (size & (HUNKF_CHIP | HUNKF_FAST) == (HUNKF_CHIP | HUNKF_FAST))
+        if ((size & (HUNKF_CHIP | HUNKF_FAST)) == (HUNKF_CHIP | HUNKF_FAST))
         {
             requirements = *words++;
         }
@@ -90,22 +95,25 @@ static ULONG LoadSegBlock(struct SmartBuffer *bu)
     /* Load and relocate hunks one after another */
     do
     {
-        ULONG hunk_size;
-        ULONG hunk_type;
+        /* Mask out the hunk type flags */
+        ULONG hunk_type = *words & 0x3fffffffUL;
 
-        switch((hunk_type = *words))
+        bug("[brcm-sdhc] LoadSegBlock hunk type %ld at 0x%lx\n", hunk_type, (ULONG)words);
+        switch(hunk_type)
         {
             case HUNK_CODE: // Fallthrough
             case HUNK_DATA: // Fallthrough
             case HUNK_BSS:
-                hunk_size = words[1];
+            {
+                ULONG hunk_size = words[1];
                 if (current_hunk >= firstHunk) {
                     if (hunk_type != HUNK_BSS) {
-                        CopyMem(&words[2], &rh[current_hunk].hunkData[2], hunk_size * 4);
+                        CopyMem(&words[2], &rh[current_hunk - firstHunk].hunkData[2], hunk_size * 4);
                     }
                 }
                 words += 2 + hunk_size;
                 break;
+            }
             
             case HUNK_RELOC32:  // Fallthrough
             case HUNK_RELOC32SHORT:
@@ -167,20 +175,28 @@ static ULONG LoadSegBlock(struct SmartBuffer *bu)
                 words++;
                 break;
 
+            case HUNK_DEBUG:
+                words += words[1] + 2;
+                break;
+
             case HUNK_END:
                 words++;
                 current_hunk++;
                 break;
+
+            default:
+                /* Unknown hunk, prevent infinite loop */
+                bug("[brcm-sdhc] Unknown hunk type: %ld\n", hunk_type);
+                FreeMem(rh, sizeof(struct RelocHunk) * hunks);
+                return 0;
         }
     } while(current_hunk <= lastHunk);
 
-    if (rh) {
-        ret = &rh[0].hunkData[1];
-        FreeMem(rh, sizeof(struct RelocHunk) * (lastHunk - firstHunk + 1));
-    }
-
+    APTR ret = &rh[0].hunkData[1];
+    FreeMem(rh, sizeof(struct RelocHunk) * hunks);
     return MKBADDR(ret);   
 }
+
 
 static void LoadFilesystem(struct SDCardUnit *unit, ULONG dosType)
 {
