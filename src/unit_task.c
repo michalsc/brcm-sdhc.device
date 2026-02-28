@@ -229,7 +229,13 @@ static struct FileSysEntry* MakeFileSysEntry(struct FileSysHeaderBlock* fhb)
     if (!fse)
         return NULL;
 
-    ULONG bytes_to_copy = (FSE_FIXED_FIELDS + fse_ext_fields) * sizeof(LONG);
+    /* 
+        FileSysEntry consists of:
+        * 3 initial fields (DosType, Version and Patch flags)
+        * 9 fixed fields (fse_Type to fse_GlobalVec)
+        * extra fields determined by patch flags (if any)
+    */
+    ULONG bytes_to_copy = (3 + FSE_FIXED_FIELDS + fse_ext_fields) * sizeof(LONG);
     CopyMem(&fhb->fhb_DosType, &fse->fse_DosType, bytes_to_copy);
     return fse;
 }
