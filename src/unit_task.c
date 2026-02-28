@@ -194,9 +194,31 @@ static ULONG LoadSegBlock(struct SmartBuffer *bu)
 
     APTR ret = &rh[0].hunkData[1];
     FreeMem(rh, sizeof(struct RelocHunk) * hunks);
-    return MKBADDR(ret);   
+    return MKBADDR(ret);
 }
 
+static void ProcessPatchFlags(struct DeviceNode *dn, struct FileSysEntry *fse)
+{
+    const ULONG patchFlags = fse->fse_PatchFlags;
+    if (patchFlags & 0x0001)
+        dn->dn_Type = fse->fse_Type;
+    if (patchFlags & 0x0002)
+        dn->dn_Task = (struct MsgPort *)fse->fse_Task;
+    if (patchFlags & 0x0004)
+        dn->dn_Lock = fse->fse_Lock;
+    if (patchFlags & 0x0008)
+        dn->dn_Handler = fse->fse_Handler;
+    if (patchFlags & 0x0010)
+        dn->dn_StackSize = fse->fse_StackSize;
+    if (patchFlags & 0x0020)
+        dn->dn_Priority = fse->fse_Priority;
+    if (patchFlags & 0x0040)
+        dn->dn_Startup = fse->fse_Startup;
+    if (patchFlags & 0x0080)
+        dn->dn_SegList = fse->fse_SegList;
+    if (patchFlags & 0x0100)
+        dn->dn_GlobalVec = fse->fse_GlobalVec;
+}
 
 static void LoadFilesystem(struct SDCardUnit *unit, ULONG dosType)
 {
@@ -635,18 +657,7 @@ static void MountPartitions(struct SDCardUnit *unit)
                             struct DeviceNode *devNode = MakeDosNode(paramPkt);
 
                             if (fse) {
-                                // Process PatchFlags
-                                ULONG *dstPatch = &devNode->dn_Type;
-                                ULONG *srcPatch = &fse->fse_Type;
-                                ULONG patchFlags = fse->fse_PatchFlags;
-                                while (patchFlags) {
-                                    if (patchFlags & 1) {
-                                        *dstPatch = *srcPatch;
-                                    }
-                                    patchFlags >>= 1;
-                                    srcPatch++;
-                                    dstPatch++;
-                                }
+                                ProcessPatchFlags(devNode, fse);
                             }
 
                             if (SDCardBase->sd_Verbose)
