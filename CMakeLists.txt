@@ -28,6 +28,11 @@ add_executable(brcm-sdhc.device
     src/findtoken.c
 )
 
+set_source_files_properties(src/abortio.c PROPERTIES COMPILE_FLAGS 
+    "-fcall-saved-d1 -fcall-saved-a0 -fcall-saved-a1")
+set_source_files_properties(src/beginio.c PROPERTIES COMPILE_FLAGS 
+    "-fcall-saved-d1 -fcall-saved-a0 -fcall-saved-a1")
+
 bin_to_header(brcm-sdhc.device)
 
 target_compile_options(brcm-sdhc.device PRIVATE -Os -m68040 -msmall-code -mregparm=4 -fomit-frame-pointer)
