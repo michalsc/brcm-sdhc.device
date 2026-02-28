@@ -40,7 +40,6 @@ static int lseg_read_long(struct SmartBuffer *buff, ULONG *ptr)
 static ULONG LoadSegBlock(struct SDCardBase *SDCardBase, struct SmartBuffer *bu)
 {
     struct ExecBase *SysBase = *(struct ExecBase **)4UL;
-    APTR ret;
     LONG firstHunk, lastHunk;
     ULONG *words;
     ULONG current_hunk = 0;
@@ -193,11 +192,8 @@ static ULONG LoadSegBlock(struct SDCardBase *SDCardBase, struct SmartBuffer *bu)
         }
     } while(current_hunk <= lastHunk);
 
-    if (rh) {
-        ret = &rh[0].hunkData[1];
-        FreeMem(rh, sizeof(struct RelocHunk) * (lastHunk - firstHunk + 1));
-    }
-
+    APTR ret = &rh[0].hunkData[1];
+    FreeMem(rh, sizeof(struct RelocHunk) * hunks);
     return MKBADDR(ret);
 }
 
