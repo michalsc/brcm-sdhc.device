@@ -245,81 +245,60 @@ APTR Init(struct ExecBase *SysBase asm("a6"))
                 SDCardBase->sd_SetLED = (APTR)sdhost_led_inverted;
             }
 
-            const char *cmdline = DT_GetPropValue(DT_FindProperty(DT_OpenKey("/chosen"), "bootargs"));
-            const char *cmd;
-
-            SDCardBase->sd_HideUnit0 = 0;
-            SDCardBase->sd_ReadOnlyUnit0 = 1;
-
-            if ((cmd = FindToken(cmdline, "sd.verbose=")))
+            key = DT_OpenKey("/emu68/brcm-sdhc");
+            if (!key) {
+                bug("[brcm-sdhc] /emu68/brcm-sdhc not found\n");
+                disabled = 1;
+            }
+            else
             {
-                ULONG verbose = 0;
-
-                for (int i=0; i < 3; i++)
-                {
-                    if (cmd[11 + i] < '0' || cmd[11 + i] > '9')
-                        break;
-
-                    verbose = verbose * 10 + cmd[11 + i] - '0';
+                if (strcmp(DT_GetPropValue(DT_FindProperty(key, "status")), "disabled") == 0) {
+                    bug("[brcm-sdhc] brcm-sdhc.device disabled by user\n");
+                    disabled = 1;
                 }
 
-                if (verbose > 10)
+                ULONG verbose = *(ULONG*)DT_GetPropValue(DT_FindProperty(key, "verbose"));
+                if (verbose > 10) {
                     verbose = 10;
-
-                bug("[brcm-sdhc] Requested verbosity level: %ld\n", verbose);
-
+                }
                 SDCardBase->sd_Verbose = (UBYTE)verbose;
-            }
-
-            if ((cmd = FindToken(cmdline, "sd.unit0=")))
-            {
-                if (cmd[9] == 'r' && cmd[10] == 'o' && (cmd[11] == 0 || cmd[11] == ' ')) {
-                    SDCardBase->sd_ReadOnlyUnit0 = 1;
-                    SDCardBase->sd_HideUnit0 = 0;
-                    bug("[brcm-sdhc] Unit 0 is read only\n");
+                if (verbose) {
+                    bug("[brcm-sdhc] Verbose level set to %ld by user\n", verbose);
                 }
-                else if (cmd[9] == 'r' && cmd[10] == 'w' && (cmd[11] == 0 || cmd[11] == ' ')) {
-                    SDCardBase->sd_ReadOnlyUnit0 = 0;
-                    SDCardBase->sd_HideUnit0 = 0;
-                    bug("[brcm-sdhc] Unit 0 is writable\n");
-                }
-                else if (cmd[9] == 'o' && cmd[10] == 'f' && cmd[11] == 'f' && (cmd[12] == 0 || cmd[12] == ' ')) {
-                    SDCardBase->sd_HideUnit0 = 1;
-                    bug("[brcm-sdhc] Unit 0 is hidden\n");
-                }
-            }
 
-            if (FindToken(cmdline, "sd.low_speed"))
-            {
-                bug("[brcm-sdhc] 50MHz mode disabled per command line\n");
-
-                SDCardBase->sd_DisableHighSpeed = 1;
-            }
-
-            if ((cmd = FindToken(cmdline, "sd.clock=")))
-            {
-                ULONG clock = 0;
-
-                for (int i=0; i < 3; i++)
+                if (DT_FindProperty(key, "low-speed"))
                 {
-                    if (cmd[9 + i] < '0' || cmd[9 + i] > '9')
-                        break;
-
-                    clock = clock * 10 + cmd[9 + i] - '0';
+                    bug("[brcm-sdhc] Low speed mode forced by user\n");
+                    SDCardBase->sd_DisableHighSpeed = 1;
                 }
 
-                if (clock > 0 && clock < 200)
+                ULONG unit0 = *(ULONG*)DT_GetPropValue(DT_FindProperty(key, "whole-drive-access"));
+                switch (unit0) {
+                    case 1:
+                        SDCardBase->sd_ReadOnlyUnit0 = 1;
+                        SDCardBase->sd_HideUnit0 = 0;
+                        bug("[brcm-sdhc] Unit 0 is read only\n");
+                        break;
+                    case 2:
+                        SDCardBase->sd_ReadOnlyUnit0 = 0;
+                        SDCardBase->sd_HideUnit0 = 0;
+                        bug("[brcm-sdhc] Unit 0 is writable\n");
+                        break;
+                    case 0:
+                        SDCardBase->sd_HideUnit0 = 1;
+                        bug("[brcm-sdhc] Unit 0 is hidden\n");
+                        break;
+                    default:
+                        bug("[brcm-sdhc] Invalid value for whole-drive-access\n");
+                        break;
+                }
+
+                ULONG clock = *(ULONG*)DT_GetPropValue(DT_FindProperty(key, "hs-clock-mhz"));
+                if (clock != 50 && clock > 0 && clock < 200)
                 {
                     bug("[brcm-sdhc] Overclocking to %ld MHz requested\n", clock);
                     SDCardBase->sd_Overclock = 1000000 * clock;
                 }
-            }
-
-            if (FindToken(cmdline, "sd.disable"))
-            {
-                bug("[brcm-sdhc] brcm-sdhc.device disabled by user\n");
-
-                disabled = 1;
             }
 
             /* Get VC4 physical address of mailbox interface. Subsequently it will be translated to m68k physical address */
