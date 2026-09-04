@@ -7,6 +7,7 @@ ULONG sdhost_getclock(struct SDCardBase *SDCardBase);
 int sdhost_powerCycle(struct SDCardBase *SDCardBase);
 void sdhost_led(int on, struct SDCardBase *SDCardBase);
 void sdhost_led_inverted(int on, struct SDCardBase *SDCardBase);
+void sdhost_led_external(int on, struct SDCardBase *SDCardBase);
 void sdhost_cmd_int(ULONG cmd, ULONG arg, ULONG timeout, struct SDCardBase *SDCardBase);
 void sdhost_cmd(ULONG command, ULONG arg, ULONG timeout, struct SDCardBase *SDCardBase);
 int sdhost_card_init(struct SDCardBase *SDCardBase);

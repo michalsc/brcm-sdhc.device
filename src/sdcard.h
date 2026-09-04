@@ -114,6 +114,7 @@ struct SDCardBase {
     UBYTE               sd_ReadOnlyUnit0;
     UBYTE               sd_Verbose;
     UBYTE               sd_UseRawPutChar;
+    UWORD               sd_ActivityDepth;
 
     struct Interrupt    sd_Interrupt;
 };

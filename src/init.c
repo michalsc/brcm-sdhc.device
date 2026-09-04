@@ -239,7 +239,12 @@ APTR Init(struct ExecBase *SysBase asm("a6"))
             bug("[brcm-sdhc] DeviceBase at %08lx\n", (ULONG)SDCardBase);
 
             const char *compatible = DT_GetPropValue(DT_FindProperty(DT_OpenKey("/"), "compatible"));
-            if (strcmp("raspberrypi,model-zero-2-w", compatible) == 0)
+            if (strcmp("raspberrypi,3-model-b", compatible) == 0)
+            {
+                bug("[brcm-sdhc] Pi 3B detected, using external GPIO for ACT LED\n");
+                SDCardBase->sd_SetLED = (APTR)sdhost_led_external;
+            }
+            else if (strcmp("raspberrypi,model-zero-2-w", compatible) == 0)
             {
                 bug("[brcm-sdhc] Zero2-W detected, inverting LED logic\n");
                 SDCardBase->sd_SetLED = (APTR)sdhost_led_inverted;
