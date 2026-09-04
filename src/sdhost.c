@@ -57,6 +57,7 @@
 #include <stdint.h>
 #include "sdcard.h"
 #include "sdhost.h"
+#include "mbox.h"
 
 
 /* Registers */
@@ -205,6 +206,12 @@ void sdhost_led_inverted(int on, struct SDCardBase *SDCardBase)
     else {
         wr32((APTR)0xf2200000, 0x1c, 1 << 29);
     }
+}
+
+void sdhost_led_external(int on, struct SDCardBase *SDCardBase)
+{
+    /* Pi 3 Model B ACT is STATUS_LED on firmware-controlled external GPIO 2. */
+    set_extgpio_state(2, on ? 1 : 0, SDCardBase);
 }
 
 static void sdhost_dump_regs(struct SDCardBase *SDCardBase)

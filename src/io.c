@@ -441,7 +441,8 @@ void int_do_io(struct IORequest *io , struct SDCardBase * SDCardBase)
     io->io_Error = 0;
 
     ObtainSemaphore(&SDCardBase->sd_Lock);
-    SDCardBase->sd_SetLED(1, SDCardBase);
+    if (SDCardBase->sd_ActivityDepth++ == 0)
+        SDCardBase->sd_SetLED(1, SDCardBase);
 
     switch (io->io_Command)
     {
@@ -632,6 +633,7 @@ void int_do_io(struct IORequest *io , struct SDCardBase * SDCardBase)
             break;
     }
 
-    SDCardBase->sd_SetLED(0, SDCardBase);
+    if (SDCardBase->sd_ActivityDepth != 0 && --SDCardBase->sd_ActivityDepth == 0)
+        SDCardBase->sd_SetLED(0, SDCardBase);
     ReleaseSemaphore(&SDCardBase->sd_Lock);
 }
